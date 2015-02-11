@@ -1,8 +1,9 @@
 require 'pty'
 require 'expect'
 require 'securerandom'
+require 'diarize'
 
-class Diarize
+class AudioDiarize
 	attr_accessor :path
 
 	def initialize(path)
@@ -12,6 +13,33 @@ class Diarize
 	def process
 		file_dir = split_audio
 		p file_dir
+
+		process_audio_files file_dir
+	end
+
+	def process_audio_files(dir)
+		threads = []
+		speakers = []
+		t = Time.now
+		Dir.glob("#{dir}/*.wav").each_with_index do |file_path, i|
+			if i < 3
+				threads << Thread.new(i) do
+					speakers << parse_audio_file(file_path)
+				end
+			end
+		end	
+		threads.each {|t| t.join}
+		speaker_1 = speakers.first.first[:speaker]
+		speaker_2 = speakers.first.last[:speaker]
+		speakers[1..-1].each do |speaker|
+			
+		end
+		File.open('log.txt', 'w') do |f|
+						f << "\n#{speakers.inspect}"
+					end
+		p "Took: #{Time.now - t}"
+
+		speakers
 	end
 
 	protected
@@ -62,10 +90,25 @@ class Diarize
 		Time.at(s).utc.strftime("%H:%M:%S")
 	end
 
+	def parse_audio_file(path)
+		url = URI.join 'file:///', "#{Dir.pwd}/#{path}"
+		audio = Diarize::Audio.new url
+		p audio
+		audio.analyze!
+
+		audio.segments.map do |seg|
+			{
+				start: seg.start,
+				duration: seg.duration,
+				speaker: seg.speaker
+			}
+		end
+	end
+
 	def clean_files
 	end
 
 
 end
 
-Diarize.new('/home/zerofries/Music/FINAL_Peter_Diamandis_Bold_TFS.wav').process
+AudioDiarize.new('/home/zerofries/Music/FINAL_Peter_Diamandis_Bold_TFS.wav').process
