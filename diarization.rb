@@ -6,6 +6,12 @@ require 'diarize'
 class AudioDiarize
 	attr_accessor :path
 
+	AUDIO_CHUNK_LENGTH = 3000 # 5 mins
+	AUDIO_INTERVAL_LENGTH = 3
+	AUDIO_SKIP_LENGTH = 2
+
+	# skew = 1/(3/5) = 1.666
+
 	def initialize(path)
 		@path = path
 	end
@@ -18,31 +24,57 @@ class AudioDiarize
 	end
 
 	def process_audio_files(dir)
-		threads = []
+		segments = []
 		speakers = []
 		t = Time.now
-		Dir.glob("#{dir}/*.wav").each_with_index do |file_path, i|
-			if i < 3
+		Dir.glob("#{dir}/*.wav").each_slice(4) do |files|
+			# parse audio in batches of 4
+			threads = []	
+			files.each_with_index do |file_path, i|
 				threads << Thread.new(i) do
-					speakers << parse_audio_file(file_path)
+					segments += parse_audio_file(file_path)
 				end
 			end
-		end	
-		threads.each {|t| t.join}
-		speaker_1 = speakers.first.first[:speaker]
-		speaker_2 = speakers.first.last[:speaker]
-		speakers[1..-1].each do |speaker|
-			
-		end
-		File.open('log.txt', 'w') do |f|
-						f << "\n#{speakers.inspect}"
+			threads.each {|t| t.join}
+
+			segments.each do |seg|
+				if speakers.empty?
+					speakers << seg[:speaker]
+				else
+					# future improvement: find matched speaker and change 
+					# every ref to that speaker to matched in one go
+					if matched_speaker = find_matching_speaker(speakers, seg[:speaker])
+						seg[:speaker] = matched_speaker
+					else
+						speakers << seg[:speaker]
 					end
-		p "Took: #{Time.now - t}"
+				end
+			end
+		end
+
+		File.open("log-#{dir}.txt", 'w') do |f|
+			segments.sort_by {|seg| seg[:start]}.each do |seg|
+				if @previous_speaker != seg[:speaker]
+					@previous_speaker = seg[:speaker]
+					f << "\nStart: #{sec_to_duration_string seg[:start]}, Speaker: #{speakers.index(seg[:speaker])}"
+				end
+			end
+			f << "\nTook: #{Time.now - t}"
+		end
 
 		speakers
 	end
 
 	protected
+
+	def find_matching_speaker(speakers, speaker)
+		matched_speaker = nil
+		speakers.each do |s|
+			matched_speaker = s if speaker.same_speaker_as s
+			break if matched_speaker
+		end
+		matched_speaker
+	end
 
 	# side effect: dir/file creation
 	def split_audio
@@ -53,7 +85,6 @@ class AudioDiarize
 		Dir.mkdir dir
 
 		dur = compute_audio_duration
-		p dur
 		# split in 10 minute chunks
 		chunks = (dur / 600) + 1
 
@@ -63,15 +94,12 @@ class AudioDiarize
 			system "ffmpeg -i #{@path} -acodec copy -t 00:#{length}:00 -ss #{start} #{dir}/p-#{n}.wav"
 		end
 
-		# PTY.spawn("adintool -in file -out file -filename #{dir}/p -startid 0 -freq 44100 -lv 2048 -zc 30 -headmargin 600 -tailmargin 600") do |reader, writer|
-		#   reader.expect(/enter filename/)
-		#   writer.puts @path
-		#   reader.expect(/enter filename/)
-		#   reader.close
-		# end
-
 		dir
 	end
+
+	# def regroup_audio(dir)
+	# 	files_per_chunk = 
+	# end
 
 	def compute_audio_duration
 		dur_io = IO.popen("ffmpeg -i #{@path} 2>&1 | grep Duration", 'r+')
@@ -93,7 +121,6 @@ class AudioDiarize
 	def parse_audio_file(path)
 		url = URI.join 'file:///', "#{Dir.pwd}/#{path}"
 		audio = Diarize::Audio.new url
-		p audio
 		audio.analyze!
 
 		audio.segments.map do |seg|
@@ -102,7 +129,7 @@ class AudioDiarize
 				duration: seg.duration,
 				speaker: seg.speaker
 			}
-		end
+		end.sort_by {|seg| seg[:start]}
 	end
 
 	def clean_files
@@ -111,4 +138,4 @@ class AudioDiarize
 
 end
 
-AudioDiarize.new('/home/zerofries/Music/FINAL_Peter_Diamandis_Bold_TFS.wav').process
+AudioDiarize.new('/home/zerofries/Music/podcast_sample.wav').process
